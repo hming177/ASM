@@ -1,0 +1,272 @@
+###MLE估计
+alpha_gamma_esti <- function(u, alpha=NULL, gamma=NULL){
+  pos_negative <- which(u <= 0)
+  pos_positive <- which(u > 0)
+  n <- length(u)
+  
+  if(is.null(alpha) & is.null(gamma)){
+    gamma_fun <-  function(gamma0){
+      res_left <- sum(abs(u[pos_negative])^gamma0)
+      res_right <- sum(abs(u[pos_positive])^gamma0)
+      ratio <- (res_left/res_right)^(1/(gamma0 + 1))
+      
+      eta_right <- (gamma0/n * (ratio+1) * res_right)^(1/gamma0)
+      eta_left <- ratio * eta_right
+      
+      d_left <- sum(abs(u[pos_negative]/eta_left)^gamma0 * log(abs(u[pos_negative]/eta_left)))
+      d_right <- sum(abs(u[pos_positive]/eta_right)^gamma0 * log(abs(u[pos_positive]/eta_right)))
+      (n/gamma0 + n*digamma(1/gamma0)/gamma0^2 - d_left - d_right)
+    }
+    
+    gamma_hat <- tryCatch({
+      uniroot(gamma_fun, interval = c(2, 30))$root
+    }, error = function(e) {
+      2
+      
+    })
+    
+    res_left <- sum(abs(u[pos_negative])^gamma_hat)
+    res_right <- sum(abs(u[pos_positive])^gamma_hat)
+    ratio <- (res_left/res_right)^(1/(gamma_hat + 1))
+    
+    eta_right <- (gamma_hat/n * (ratio+1) * res_right)^(1/gamma_hat)
+    eta_left <- ratio * eta_right
+    eta_ratio <- eta_left/eta_right
+    alpha_hat <-  1 / (1 + eta_ratio^(-gamma_hat))
+    cons <- sqrt(gamma(1/gamma_hat)/gamma(3/gamma_hat))
+    sigma_hat <- eta_right * (alpha_hat)^(1/gamma_hat)
+    
+  }else if(!is.null(gamma) & is.null(alpha)){
+    gamma_hat <- gamma
+    res_left <- sum(abs(u[pos_negative])^gamma_hat)
+    res_right <- sum(abs(u[pos_positive])^gamma_hat)
+    ratio <- (res_left/res_right)^(1/(gamma_hat + 1))
+    
+    eta_right <- (gamma_hat/n * (ratio+1) * res_right)^(1/gamma_hat)
+    eta_left <- ratio * eta_right
+    eta_ratio <- eta_left/eta_right
+    alpha_hat <-  1 / (1 + ratio^(-gamma_hat))
+    
+    cons <- sqrt(gamma(1/gamma_hat)/gamma(3/gamma_hat))
+    sigma_hat <- eta_right * (alpha_hat)^(1/gamma_hat)
+    
+  }else if(is.null(gamma) & !is.null(alpha)){
+    alpha_hat <- alpha
+    gamma_fun <-  function(gamma0){
+      res_left <- sum(abs(u[pos_negative])^gamma0)
+      res_right <- sum(abs(u[pos_positive])^gamma0)
+      res_left - res_right * (alpha_hat/(1 - alpha_hat))^(1+1/gamma0)
+    }
+    
+    gamma_hat <- tryCatch({
+      uniroot(gamma_fun, interval = c(2, 30))$root
+    }, error = function(e) {
+      2
+      
+    })
+    
+    res_left <- sum(abs(u[pos_negative])^gamma_hat)
+    res_right <- sum(abs(u[pos_positive])^gamma_hat)
+    ratio <- (res_left/res_right)^(1/(gamma_hat + 1))
+    
+    eta_right <- (gamma_hat/n * (ratio+1) * res_right)^(1/gamma_hat)
+    eta_left <- ratio * eta_right
+    eta_ratio <- eta_left/eta_right
+    
+    cons <- sqrt(gamma(1/gamma_hat)/gamma(3/gamma_hat))
+    sigma_hat <- eta_right * (alpha_hat)^(1/gamma_hat)
+    
+  }else{
+    alpha_hat <- alpha
+    gamma_hat <- gamma
+    
+    res_left <- sum(abs(u[pos_negative])^gamma_hat)
+    res_right <- sum(abs(u[pos_positive])^gamma_hat)
+    ratio <- (res_left/res_right)^(1/(gamma_hat + 1))
+    
+    eta_right <- (gamma_hat/n * (ratio+1) * res_right)^(1/gamma_hat)
+    cons <- sqrt(gamma(1/gamma_hat)/gamma(3/gamma_hat))
+    sigma_hat <- eta_right * (alpha_hat)^(1/gamma_hat)
+  }
+  
+  return(list(alpha_hat = alpha_hat, gamma_hat = gamma_hat, sigma_hat=sigma_hat))
+}
+
+
+asm <- function(x, y, size=NULL, alpha=0.5, gamma=2, intercept=TRUE, tau=0.5){
+  x <- as.matrix(x)
+  y <- as.matrix(y)
+  np <- dim(x)
+  n <- np[1]
+  p <- np[2]
+  tx <- t(x)
+  tx2 <- t(x^2)
+  if(is.null(size)) {size <- unique(floor(seq(1, n/(log(n)*log(p)), length=20)))}
+  
+  bk_fun <- function(x, y, alpha=0.5, gamma=2, intercept=TRUE){
+    if(intercept){x <- cbind(1, x)}
+    
+    x <- as.matrix(x)
+    y <- as.vector(y)
+    tx <- t(x)
+    
+    
+    par <- ginv(tx %*% x) %*% tx %*% y 
+    if(gamma==2&&alpha==0.5){ 
+      b.est <- par
+    }else{
+      b.est <- par + 100
+      for(k in 1:1000){
+        u <- y - x %*% par
+        weight <- weight_alpha(u, alpha)
+        
+        f <- -tx %*% (weight * (abs(u))^(gamma-1) * sign(u))  #一阶导数
+        tt <- weight * (abs(u))^(gamma-2) * (gamma-1)
+        f_diff <- Reduce('+', map(1:length(y), \(i) as.matrix(x[i, ]) %*% tx[, i] * tt[i] ))
+        
+        
+        b.est <- par - ginv(f_diff) %*% f
+        if(norm(b.est - par,"2")<=1e-4) break
+        par <- b.est
+      }
+    }
+    
+    if(intercept){
+      return(b.est)
+    }else{
+      return(c(0, b.est))
+    }
+    
+  }
+  
+  weight_alpha <- function(u, alpha){
+    abs(alpha - ifelse(u<=0, 1, 0))
+  }
+  
+  gd_fun <- function(x, y, par, alpha=0.5, gamma=2){
+    Astar <- which(par[-1]!=0)
+    if(length(Astar)==0){
+      pe <- rep(par[1], n)
+    }else{
+      pe <- as.matrix(x[, Astar]) %*% par[(Astar+1)] + par[1]
+    }
+    
+    u <- y - pe
+    weight <- weight_alpha(u, alpha)
+    
+    dj <- tx %*% (weight * (abs(u))^(gamma-1) * sign(u)) #一阶导数的负方向
+    gj <- tx2 %*% (weight * (abs(u))^(gamma-2) * (gamma-1)) #二阶偏导数
+    
+    return(list(gk=rowSums(gj), dk=rowSums(dj)/rowSums(gj)))
+  } 
+  
+  epdas_asm <- function(ms, beta.int){
+    time.start <- proc.time()
+    if(is.null(beta.int)){
+      bk <- rep(0, p+1)
+    }else{
+      bk <- beta.int
+    }
+    grad <- gd_fun(x, y, par=bk, alpha=alpha, gamma=gamma)
+    gk <- grad$gk 
+    dk <- grad$dk
+    Hk <- sqrt(gk)*abs(tau*bk[-1] + (1-tau)*dk)
+    Ak <- which(Hk >= sort(Hk, decreasing =TRUE)[ms])
+    
+    res <- Matrix(0L, nrow=p+3, ncol=1)
+    maxoutiter <- min(2*ms, 20)
+    for (k in 1:maxoutiter) {
+      Ik <- setdiff(1:p, Ak)
+      res[Ik+3] <- 0
+      fit <- bk_fun(x[, Ak], y, alpha=alpha, gamma=gamma, intercept=intercept)
+      res[Ak+3] <- fit[-1]
+      res[3] <- fit[1]
+      
+      grad <- gd_fun(x, y, res[3:(p+3)], alpha=alpha, gamma=gamma)
+      gk <- grad$gk
+      dk <- grad$dk
+      Hk <- sqrt(gk)*abs(tau*res[4:(p+3)] + (1-tau)*dk)
+      Anew <- which(Hk >= sort(Hk, decreasing =TRUE)[ms])
+      if(setequal(Ak, Anew)){
+        time.end <- proc.time()
+        rt <- (time.end - time.start)[3]
+        res[1:2] <- c(rt, k)
+        return(list(res=res, Ahat=Anew))
+      }
+      Ak <- Anew
+    }
+    time.end <- proc.time()
+    rt <- (time.end - time.start)[3]
+    res[1:2] <- c(rt, k)
+    return(list(res=res, Ahat=Ak))
+  }
+  
+  beta.int <- NULL
+  beta <- NULL
+  sigma <- NULL
+  hbic <- NULL
+  running <- NULL
+  iter <- NULL
+  for (ms in size) {
+    fit <- epdas_asm(ms, beta.int)
+    beta.int <- Matrix(fit$res[-c(1:2)], ncol=1)
+    
+    an <- log(log(n)) * log(p) * ms/n
+    u <- y - as.matrix(x[, fit$Ahat]) %*% beta.int[fit$Ahat+1] - beta.int[1]
+    weight <- weight_alpha(u, alpha)
+    ee <- mean(gamma * weight * (abs(u))^(gamma))^(1/gamma)
+    sigma <- c(sigma, ee)
+    hbic <- c(hbic, an+log(ee)) 
+    
+    
+    beta <- cbind(beta, beta.int)
+    
+    running <- cbind(running, fit$res[1])
+    iter <- cbind(iter, fit$res[2])
+  }
+  
+  return(list(opt_beta=Matrix(beta[, which.min(hbic)], ncol=1), opt_ms=size[which.min(hbic)], 
+              beta = beta, sigma=sigma, running = running, iter = iter, hbic=hbic, alpha=alpha, gamma=gamma))
+}
+
+
+adaptive_asm <- function(x, y, size=NULL, alpha=NULL, gamma=NULL, intercept=TRUE, tau=0.5, maxiter_ag=30){
+  
+  weight_alpha <- function(u, alpha){
+    abs(alpha - ifelse(u<=0, 1, 0))
+  }
+  
+  if(is.null(alpha)&&is.null(gamma)){
+    alpha0 <- 0.5
+    gamma0 <- 2
+  }else{
+    esti <- alpha_gamma_esti(y-mean(y), alpha=alpha, gamma=gamma)
+    alpha0 <- esti$alpha_hat
+    gamma0 <- esti$gamma_hat
+  }
+
+  iter <- 0
+  running_time <- 0
+  for (ag in 1:maxiter_ag) {
+    fit <- asm(x, y, size=size, alpha=alpha0, gamma=gamma0, intercept=intercept, tau=tau)
+    beta_esti <- fit$opt_beta
+    Ahat <- which(beta_esti[-1] != 0)
+    u <- y - as.matrix(x[, Ahat]) %*% beta_esti[Ahat + 1] - beta_esti[1]
+    running_time <- running_time + fit$running
+    iter <- iter + fit$iter
+    
+    esti <- alpha_gamma_esti(u, alpha=alpha, gamma=gamma)
+    alpha_esti <- esti$alpha_hat
+    gamma_esti <- esti$gamma_hat
+    sigma_esti <- esti$sigma_hat
+    if(((abs(alpha0 - alpha_esti) < 0.01) && (abs(gamma0 - gamma_esti) < 0.01))) break
+    
+    alpha0 <- alpha_esti
+    gamma0 <- gamma_esti
+    
+  }
+  
+  fit$iter <- ag#iter
+  fit$running <- running_time
+  return(fit)
+}
