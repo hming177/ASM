@@ -1,1 +1,1 @@
-# ASM
+# Asymmetric subbotin model selection
